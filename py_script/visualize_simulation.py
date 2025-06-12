@@ -83,16 +83,46 @@ def load_simulation_data(filepath):
         return json.load(f)
 
 
+def png_to_hex_grid(png_path):
+    """Convert a PNG image to hex color grid format."""
+    img = Image.open(png_path).convert('RGB')
+    width, height = img.size
+    
+    hex_grid = []
+    for y in range(height):
+        row = []
+        for x in range(width):
+            r, g, b = img.getpixel((x, y))
+            hex_color = f"#{r:02x}{g:02x}{b:02x}".upper()
+            row.append(hex_color)
+        hex_grid.append(row)
+    
+    return hex_grid
+
+
 def load_hex_grids():
-    """Load all hex grid patterns from CSV files."""
+    """Load all hex grid patterns from CSV and PNG files."""
     hex_grids = {}
-    # Iterate through all CSV files in the hex_grid directory
+    
+    # Load existing CSV files
     for file_path in glob.glob(os.path.join(hex_grid_dir, "*.csv")):
         key_name = os.path.basename(file_path)[:-4]  # Remove the .csv extension
         # Load the 20x20 grid from the CSV file
         grid = pd.read_csv(file_path, header=None).values.tolist()
         # Store the grid in the dictionary with the file name as the key
         hex_grids[key_name] = grid
+    
+    # Load new PNG files and convert to hex format
+    png_grid_dir = os.path.join(main_dir, "hex_grid_png")
+    if os.path.exists(png_grid_dir):
+        for file_path in glob.glob(os.path.join(png_grid_dir, "*.png")):
+            key_name = os.path.basename(file_path)[:-4]  # Remove the .png extension
+            # Convert PNG to hex grid format
+            grid = png_to_hex_grid(file_path)
+            # Store the grid in the dictionary with the file name as the key
+            hex_grids[key_name] = grid
+            print(f"Loaded PNG pattern: {key_name}")
+    
     return hex_grids
 
 
@@ -118,7 +148,7 @@ def process_terrain_to_patterns(terrain_grid):
     rows, cols = terrain_grid.shape
     result = []
 
-    # Iterate through the grid in 2x2 blocks
+    # Iterate through the grid in 2x2 blocks (same as make_big_hex.py)
     for i in range(rows - 1):
         row = []
         for j in range(cols - 1):
@@ -137,7 +167,7 @@ def process_terrain_to_patterns(terrain_grid):
 
 
 def expand_pattern_grid(pattern_grid, hex_grids):
-    """Expand pattern grid using 20x20 hex grid templates."""
+    """Expand pattern grid using 20x20 hex grid templates with transformation support."""
     expanded_grid = []
     for pattern_row in pattern_grid:
         # For each row in the pattern grid, expand it into 20 rows
@@ -145,21 +175,33 @@ def expand_pattern_grid(pattern_grid, hex_grids):
         for pattern in pattern_row:
             # Get the 20x20 grid for the current pattern
             pattern_key = pattern + "1"  # Add the "1" suffix
+            
             if pattern_key in hex_grids:
+                # Direct match found
                 sub_grid = hex_grids[pattern_key]
-            else:
-                # Fallback strategy for missing patterns
-                if "l" in pattern:
-                    # If pattern contains lava but no exact match, try to find a similar lava pattern
-                    fallback_keys = [k for k in hex_grids.keys() if "l" in k]
-                    if fallback_keys:
-                        sub_grid = hex_grids[fallback_keys[0]]
+            elif pattern in PATTERN_TRANSFORMATIONS:
+                # Use transformation mapping for missing patterns
+                canonical_name, transform_func = PATTERN_TRANSFORMATIONS[pattern]
+                
+                if canonical_name in hex_grids:
+                    # Load canonical pattern and transform it
+                    base_grid = hex_grids[canonical_name]
+                    
+                    if transform_func is None:
+                        # No transformation needed
+                        sub_grid = base_grid
                     else:
-                        # If no lava patterns exist, use a red color as fallback
-                        sub_grid = [["#FF6B35"] * 20] * 20  # Red/orange for lava
+                        # Convert hex grid to PIL Image, transform, then back to hex grid
+                        img = hex_grid_to_image(base_grid)
+                        transformed_img = transform_func(img)
+                        sub_grid = image_to_hex_grid(transformed_img)
                 else:
-                    # Default fallback to grass
-                    sub_grid = hex_grids.get("gggg1", [["#A8E61D"] * 20] * 20)
+                    print(f"Warning: Canonical pattern {canonical_name} not found for {pattern}")
+                    sub_grid = create_fallback_grid(pattern)
+            else:
+                # Legacy fallback strategy for missing patterns
+                print(f"Warning: No transformation found for pattern {pattern}")
+                sub_grid = create_fallback_grid(pattern)
             
             # Append each row of the sub-grid to the corresponding expanded row
             for i in range(20):
@@ -167,6 +209,199 @@ def expand_pattern_grid(pattern_grid, hex_grids):
         # Add the expanded rows to the final grid
         expanded_grid.extend(expanded_rows)
     return expanded_grid
+
+
+def hex_grid_to_image(hex_grid):
+    """Convert a hex color grid to PIL Image."""
+    height = len(hex_grid)
+    width = len(hex_grid[0]) if height > 0 else 0
+    
+    img = Image.new('RGB', (width, height))
+    for y in range(height):
+        for x in range(width):
+            hex_color = hex_grid[y][x]
+            if hex_color.startswith('#'):
+                hex_color = hex_color[1:]
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            img.putpixel((x, y), (r, g, b))
+    
+    return img
+
+
+def image_to_hex_grid(img):
+    """Convert PIL Image to hex color grid."""
+    width, height = img.size
+    hex_grid = []
+    
+    for y in range(height):
+        row = []
+        for x in range(width):
+            r, g, b = img.getpixel((x, y))
+            hex_color = f"#{r:02x}{g:02x}{b:02x}".upper()
+            row.append(hex_color)
+        hex_grid.append(row)
+    
+    return hex_grid
+
+
+def create_fallback_grid(pattern):
+    """Create a fallback grid for missing patterns."""
+    if "l" in pattern:
+        # If pattern contains lava, use red color as fallback
+        return [["#FF6B35"] * 20] * 20  # Red/orange for lava
+    else:
+        # Default fallback to grass
+        return [["#A8E61D"] * 20] * 20  # Light green for grass
+
+
+def save_pattern_grid_csv(pattern_grid, filepath):
+    """Save pattern grid to CSV file (like big_key.csv in make_big_hex.py)."""
+    df = pd.DataFrame(pattern_grid)
+    df.to_csv(filepath, index=False, header=False)
+    print(f"Saved pattern grid to {filepath}")
+
+
+def save_expanded_grid_csv(expanded_grid, filepath):
+    """Save expanded grid to CSV file (like expanded_map.csv in make_big_hex.py)."""
+    df = pd.DataFrame(expanded_grid)
+    df.to_csv(filepath, index=False, header=False)
+    print(f"Saved expanded grid to {filepath}")
+
+
+def rotate_pattern_90(pattern):
+    """Rotate a 2x2 pattern 90 degrees clockwise."""
+    # Original: AB  ->  CA
+    #           CD      DB
+    return pattern[2] + pattern[0] + pattern[3] + pattern[1]
+
+
+def rotate_pattern_180(pattern):
+    """Rotate a 2x2 pattern 180 degrees."""
+    # Original: AB  ->  DC
+    #           CD      BA
+    return pattern[3] + pattern[2] + pattern[1] + pattern[0]
+
+
+def rotate_pattern_270(pattern):
+    """Rotate a 2x2 pattern 270 degrees clockwise."""
+    # Original: AB  ->  BD
+    #           CD      AC
+    return pattern[1] + pattern[3] + pattern[0] + pattern[2]
+
+
+def flip_pattern_horizontal(pattern):
+    """Flip a 2x2 pattern horizontally."""
+    # Original: AB  ->  BA
+    #           CD      DC
+    return pattern[1] + pattern[0] + pattern[3] + pattern[2]
+
+
+def flip_pattern_vertical(pattern):
+    """Flip a 2x2 pattern vertically."""
+    # Original: AB  ->  CD
+    #           CD      AB
+    return pattern[2] + pattern[3] + pattern[0] + pattern[1]
+
+
+def transform_image_90(img):
+    """Rotate image 90 degrees clockwise."""
+    return img.transpose(Image.ROTATE_270)
+
+
+def transform_image_180(img):
+    """Rotate image 180 degrees."""
+    return img.transpose(Image.ROTATE_180)
+
+
+def transform_image_270(img):
+    """Rotate image 270 degrees clockwise."""
+    return img.transpose(Image.ROTATE_90)
+
+
+def transform_image_flip_h(img):
+    """Flip image horizontally."""
+    return img.transpose(Image.FLIP_LEFT_RIGHT)
+
+
+def transform_image_flip_v(img):
+    """Flip image vertically."""
+    return img.transpose(Image.FLIP_TOP_BOTTOM)
+
+
+# Pattern mapping: maps any pattern to its canonical form and required transformation
+PATTERN_TRANSFORMATIONS = {
+    # Water-Forest patterns - Group 1: fffw canonical
+    "fffw": ("fffw1", None),
+    "ffwf": ("fffw1", transform_image_270),  # Fixed: was 90, should be 270
+    "fwff": ("fffw1", transform_image_180),
+    "wfff": ("fffw1", transform_image_90),   # Fixed: was 270, should be 90
+    
+    # Group 2: ffww canonical
+    "ffww": ("ffww1", None),
+    "fwfw": ("ffww1", transform_image_90),
+    "wfwf": ("ffww1", transform_image_180),
+    "wwff": ("ffww1", transform_image_270),
+    
+    # Group 3: fwwf canonical
+    "fwwf": ("fwwf1", None),
+    "wffw": ("fwwf1", transform_image_180),
+    
+    # Group 4: fwww canonical
+    "fwww": ("fwww1", None),
+    "wfww": ("fwww1", transform_image_90),
+    "wwfw": ("fwww1", transform_image_180),
+    "wwwf": ("fwww1", transform_image_270),
+    
+    # Mixed patterns - Group 5: ffgw canonical
+    "ffgw": ("ffgw1", None),
+    "ffwg": ("ffgw1", transform_image_flip_h),
+    "fgfw": ("ffgw1", transform_image_90),
+    "fwgf": ("ffgw1", transform_image_flip_v),
+    "gffw": ("ffgw1", transform_image_270),
+    "gfwf": ("ffgw1", transform_image_180),
+    "wffg": ("ffgw1", transform_image_flip_h),
+    "wfgf": ("ffgw1", None),  # Same as ffgw rotated differently
+    
+    # Group 6: fggw canonical  
+    "fggw": ("fggw1", None),
+    "fgwg": ("fggw1", transform_image_90),
+    "fwgg": ("fggw1", transform_image_180),
+    "gwgf": ("fggw1", transform_image_270),
+    
+    # Group 7: fgwf canonical
+    "fgwf": ("fgwf1", None),
+    "gwff": ("fgwf1", transform_image_90),
+    "wfgf": ("fgwf1", transform_image_180),
+    "gffw": ("fgwf1", transform_image_270),
+    
+    # Group 8: fgwg canonical
+    "fgwg": ("fgwg1", None),
+    "gfgw": ("fgwg1", transform_image_90),
+    "wgfg": ("fgwg1", transform_image_180),
+    "gwgf": ("fgwg1", transform_image_270),
+    "gfwg": ("fgwg1", transform_image_flip_h),
+    "wgff": ("fgwg1", transform_image_flip_v),
+    "gfgw": ("fgwg1", None),  # Already covered
+    "wggf": ("fgwg1", transform_image_flip_h),
+    
+    # Group 9: fgww canonical
+    "fgww": ("fgww1", None),
+    "gfww": ("fgww1", transform_image_flip_h),
+    "gwfw": ("fgww1", transform_image_90),
+    "gwwf": ("fgww1", transform_image_flip_v),
+    "wfgw": ("fgww1", transform_image_180),
+    "wfwg": ("fgww1", transform_image_270),
+    "wgfw": ("fgww1", None),  # Same pattern rotated
+    "wwgf": ("fgww1", transform_image_flip_h),
+    
+    # Group 10: fwwg canonical
+    "fwwg": ("fwwg1", None),
+    "gwfw": ("fwwg1", transform_image_90),
+    "wgwf": ("fwwg1", transform_image_180),
+    "wwfg": ("fwwg1", transform_image_270),
+}
 
 
 def extract_player_positions(game_state):
@@ -249,7 +484,17 @@ def create_frame_image(terrain_grid, player_positions, lava_positions, death_loc
     """Create a single frame image with high-resolution terrain, players, volcanoes, and graves."""
     # Convert terrain to patterns and expand using hex grids
     pattern_grid = process_terrain_to_patterns(terrain_grid)
+    
+    # Save pattern grid as CSV (like big_key.csv)
+    pattern_csv_path = os.path.join(output_dir, f"frame_{frame_number:03d}_pattern_grid.csv")
+    save_pattern_grid_csv(pattern_grid, pattern_csv_path)
+    
+    # Expand using hex grids
     expanded_grid = expand_pattern_grid(pattern_grid, hex_grids)
+    
+    # Save expanded grid as CSV (like expanded_map.csv)
+    expanded_csv_path = os.path.join(output_dir, f"frame_{frame_number:03d}_expanded_grid.csv")
+    save_expanded_grid_csv(expanded_grid, expanded_csv_path)
     
     # Get dimensions of the expanded grid
     height = len(expanded_grid)
