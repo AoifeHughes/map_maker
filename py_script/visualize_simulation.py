@@ -20,7 +20,7 @@ TERRAIN_MAPPING = {
     "ocean": "w",      # Water (w)
     "open_land": "g",  # Grass (g) 
     "forest": "f",     # Forest (f)
-    "lava": "f"        # Lava -> forest for now (no lava patterns exist)
+    "lava": "g"        # Lava -> grass background, volcano sprite overlay
 }
 
 def load_player_sprite():
@@ -31,6 +31,17 @@ def load_player_sprite():
     else:
         # Create a fallback if player.png doesn't exist
         fallback = Image.new("RGBA", (20, 20), (255, 215, 0, 255))  # Gold square
+        return fallback
+
+
+def load_volcano_sprite():
+    """Load the volcano sprite from pixel_image directory."""
+    volcano_path = os.path.join(pixel_image_dir, "volcano.png")
+    if os.path.exists(volcano_path):
+        return Image.open(volcano_path).convert("RGBA")
+    else:
+        # Create a fallback if volcano.png doesn't exist
+        fallback = Image.new("RGBA", (20, 20), (255, 100, 0, 255))  # Orange square
         return fallback
 
 
@@ -126,8 +137,18 @@ def expand_pattern_grid(pattern_grid, hex_grids):
             if pattern_key in hex_grids:
                 sub_grid = hex_grids[pattern_key]
             else:
-                # Fallback to all grass if pattern not found
-                sub_grid = hex_grids.get("gggg1", [["#A8E61D"] * 20] * 20)
+                # Fallback strategy for missing patterns
+                if "l" in pattern:
+                    # If pattern contains lava but no exact match, try to find a similar lava pattern
+                    fallback_keys = [k for k in hex_grids.keys() if "l" in k]
+                    if fallback_keys:
+                        sub_grid = hex_grids[fallback_keys[0]]
+                    else:
+                        # If no lava patterns exist, use a red color as fallback
+                        sub_grid = [["#FF6B35"] * 20] * 20  # Red/orange for lava
+                else:
+                    # Default fallback to grass
+                    sub_grid = hex_grids.get("gggg1", [["#A8E61D"] * 20] * 20)
             
             # Append each row of the sub-grid to the corresponding expanded row
             for i in range(20):
@@ -150,12 +171,25 @@ def extract_player_positions(game_state):
     return positions
 
 
-def scale_player_positions(player_positions, scale_factor=20):
-    """Scale player positions from simulation grid to expanded image coordinates."""
+def extract_lava_positions(game_state):
+    """Extract lava/volcano positions from game state."""
+    board = game_state["board"]
+    lava_positions = []
+    
+    for cell in board["cells"]:
+        if cell["land_type"] == "lava":
+            row, col = cell["position"]
+            lava_positions.append((row, col))
+    
+    return lava_positions
+
+
+def scale_positions(positions, scale_factor=20):
+    """Scale positions from simulation grid to expanded image coordinates."""
     scaled_positions = []
-    for row, col in player_positions:
+    for row, col in positions:
         # Each simulation cell becomes a 20x20 block
-        # Place player in center of their block
+        # Place sprite in center of their block
         scaled_row = row * scale_factor + scale_factor // 2
         scaled_col = col * scale_factor + scale_factor // 2
         scaled_positions.append((scaled_row, scaled_col))
@@ -169,8 +203,8 @@ def hex_to_rgb(hex_color):
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
 
 
-def create_frame_image(terrain_grid, player_positions, frame_number, hex_grids, player_sprite):
-    """Create a single frame image with high-resolution terrain and players."""
+def create_frame_image(terrain_grid, player_positions, lava_positions, frame_number, hex_grids, player_sprite, volcano_sprite):
+    """Create a single frame image with high-resolution terrain, players, and volcanoes."""
     # Convert terrain to patterns and expand using hex grids
     pattern_grid = process_terrain_to_patterns(terrain_grid)
     expanded_grid = expand_pattern_grid(pattern_grid, hex_grids)
@@ -189,11 +223,27 @@ def create_frame_image(terrain_grid, player_positions, frame_number, hex_grids, 
             rgb_color = hex_to_rgb(hex_color)
             img.putpixel((x, y), rgb_color)
     
-    # Convert to RGBA for alpha blending with player sprites
+    # Convert to RGBA for alpha blending with sprites
     img = img.convert("RGBA")
     
-    # Scale player positions and overlay them using the player sprite
-    scaled_players = scale_player_positions(player_positions)
+    # Scale and overlay volcano sprites first (so players appear on top)
+    scaled_volcanoes = scale_positions(lava_positions)
+    
+    for row, col in scaled_volcanoes:
+        # Calculate position to center the sprite on the scaled position
+        sprite_width, sprite_height = volcano_sprite.size
+        paste_x = col - sprite_width // 2
+        paste_y = row - sprite_height // 2
+        
+        # Make sure the sprite is within bounds
+        if (paste_x + sprite_width > 0 and paste_x < width and 
+            paste_y + sprite_height > 0 and paste_y < height):
+            
+            # Paste the volcano sprite with alpha blending
+            img.paste(volcano_sprite, (paste_x, paste_y), volcano_sprite)
+    
+    # Scale and overlay player sprites (on top of everything)
+    scaled_players = scale_positions(player_positions)
     
     for row, col in scaled_players:
         # Calculate position to center the sprite on the scaled position
@@ -230,13 +280,15 @@ def visualize_simulation(simulation_file=None):
     
     print(f"Using simulation file: {simulation_file}")
     
-    # Load simulation data, hex grids, and player sprite
+    # Load simulation data, hex grids, and sprites
     simulation_data = load_simulation_data(simulation_file)
     hex_grids = load_hex_grids()
     player_sprite = load_player_sprite()
+    volcano_sprite = load_volcano_sprite()
     print(f"Loaded {len(simulation_data)} game states")
     print(f"Loaded {len(hex_grids)} hex grid patterns")
     print(f"Loaded player sprite: {player_sprite.size}")
+    print(f"Loaded volcano sprite: {volcano_sprite.size}")
     
     # Clear and prepare output directory
     clear_output_directory()
@@ -245,15 +297,16 @@ def visualize_simulation(simulation_file=None):
     # Process each game state
     generated_frames = []
     for i, game_state in enumerate(simulation_data):
-        # Extract terrain and player data
+        # Extract terrain, player, and lava data
         terrain_grid = extract_board_data(game_state)
         player_positions = extract_player_positions(game_state)
+        lava_positions = extract_lava_positions(game_state)
         
-        # Create frame image using hex grids and player sprite
-        frame_path = create_frame_image(terrain_grid, player_positions, i, hex_grids, player_sprite)
+        # Create frame image using hex grids and sprites
+        frame_path = create_frame_image(terrain_grid, player_positions, lava_positions, i, hex_grids, player_sprite, volcano_sprite)
         generated_frames.append(frame_path)
         
-        print(f"Generated frame {i:03d}: {len(player_positions)} players alive")
+        print(f"Generated frame {i:03d}: {len(player_positions)} players, {len(lava_positions)} volcanoes")
     
     print(f"\nVisualization complete!")
     print(f"Generated {len(generated_frames)} frames in {output_dir}")

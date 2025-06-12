@@ -12,7 +12,7 @@ output_path = os.path.join(main_dir, "made_maps/big_key.csv")
 hex_grid_dir = os.path.join(main_dir, "hex_grid")
 
 # Mapping from numeric values to labels
-value_to_label = {0: "w", 1: "g", 2: "f"}
+value_to_label = {0: "w", 1: "g", 2: "f", 3: "l"}
 
 
 def process_base_map(base_map):
