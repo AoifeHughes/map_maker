@@ -45,6 +45,17 @@ def load_volcano_sprite():
         return fallback
 
 
+def load_rip_sprite():
+    """Load the RIP sprite from pixel_image directory."""
+    rip_path = os.path.join(pixel_image_dir, "rip.png")
+    if os.path.exists(rip_path):
+        return Image.open(rip_path).convert("RGBA")
+    else:
+        # Create a fallback if rip.png doesn't exist  
+        fallback = Image.new("RGBA", (20, 20), (128, 128, 128, 255))  # Gray square
+        return fallback
+
+
 def ensure_directory_exists(path):
     """Create directory if it doesn't exist."""
     Path(path).mkdir(parents=True, exist_ok=True)
@@ -171,6 +182,37 @@ def extract_player_positions(game_state):
     return positions
 
 
+def track_death_locations_up_to_frame(simulation_data, current_frame):
+    """Track locations where players died up to the current frame."""
+    death_locations = set()
+    
+    # Keep track of player states across frames
+    previous_players = {}
+    
+    # Only process frames up to and including the current frame
+    for frame_idx, game_state in enumerate(simulation_data[:current_frame + 1]):
+        current_players = {}
+        
+        for i, player in enumerate(game_state["players"]):
+            # Use the list index as player ID since 'id' field is missing
+            player_id = i
+            current_alive = player.get("alive", False)
+            current_pos = tuple(player["location"])
+            
+            # Check if this player was alive before and is now dead
+            if player_id in previous_players:
+                prev_alive, prev_pos = previous_players[player_id]
+                if prev_alive and not current_alive:
+                    # Player died - record the location where they died
+                    death_locations.add(prev_pos)
+            
+            current_players[player_id] = (current_alive, current_pos)
+        
+        previous_players = current_players
+    
+    return list(death_locations)
+
+
 def extract_lava_positions(game_state):
     """Extract lava/volcano positions from game state."""
     board = game_state["board"]
@@ -203,8 +245,8 @@ def hex_to_rgb(hex_color):
     return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
 
 
-def create_frame_image(terrain_grid, player_positions, lava_positions, frame_number, hex_grids, player_sprite, volcano_sprite):
-    """Create a single frame image with high-resolution terrain, players, and volcanoes."""
+def create_frame_image(terrain_grid, player_positions, lava_positions, death_locations, frame_number, hex_grids, player_sprite, volcano_sprite, rip_sprite):
+    """Create a single frame image with high-resolution terrain, players, volcanoes, and graves."""
     # Convert terrain to patterns and expand using hex grids
     pattern_grid = process_terrain_to_patterns(terrain_grid)
     expanded_grid = expand_pattern_grid(pattern_grid, hex_grids)
@@ -226,7 +268,7 @@ def create_frame_image(terrain_grid, player_positions, lava_positions, frame_num
     # Convert to RGBA for alpha blending with sprites
     img = img.convert("RGBA")
     
-    # Scale and overlay volcano sprites first (so players appear on top)
+    # Scale and overlay volcano sprites first (bottom layer)
     scaled_volcanoes = scale_positions(lava_positions)
     
     for row, col in scaled_volcanoes:
@@ -242,7 +284,23 @@ def create_frame_image(terrain_grid, player_positions, lava_positions, frame_num
             # Paste the volcano sprite with alpha blending
             img.paste(volcano_sprite, (paste_x, paste_y), volcano_sprite)
     
-    # Scale and overlay player sprites (on top of everything)
+    # Scale and overlay RIP sprites (middle layer)
+    scaled_graves = scale_positions(death_locations)
+    
+    for row, col in scaled_graves:
+        # Calculate position to center the sprite on the scaled position
+        sprite_width, sprite_height = rip_sprite.size
+        paste_x = col - sprite_width // 2
+        paste_y = row - sprite_height // 2
+        
+        # Make sure the sprite is within bounds
+        if (paste_x + sprite_width > 0 and paste_x < width and 
+            paste_y + sprite_height > 0 and paste_y < height):
+            
+            # Paste the RIP sprite with alpha blending
+            img.paste(rip_sprite, (paste_x, paste_y), rip_sprite)
+    
+    # Scale and overlay player sprites (top layer - appear on top of everything)
     scaled_players = scale_positions(player_positions)
     
     for row, col in scaled_players:
@@ -285,10 +343,12 @@ def visualize_simulation(simulation_file=None):
     hex_grids = load_hex_grids()
     player_sprite = load_player_sprite()
     volcano_sprite = load_volcano_sprite()
+    rip_sprite = load_rip_sprite()
     print(f"Loaded {len(simulation_data)} game states")
     print(f"Loaded {len(hex_grids)} hex grid patterns")
     print(f"Loaded player sprite: {player_sprite.size}")
     print(f"Loaded volcano sprite: {volcano_sprite.size}")
+    print(f"Loaded RIP sprite: {rip_sprite.size}")
     
     # Clear and prepare output directory
     clear_output_directory()
@@ -302,11 +362,14 @@ def visualize_simulation(simulation_file=None):
         player_positions = extract_player_positions(game_state)
         lava_positions = extract_lava_positions(game_state)
         
+        # Track death locations up to this frame only
+        death_locations = track_death_locations_up_to_frame(simulation_data, i)
+        
         # Create frame image using hex grids and sprites
-        frame_path = create_frame_image(terrain_grid, player_positions, lava_positions, i, hex_grids, player_sprite, volcano_sprite)
+        frame_path = create_frame_image(terrain_grid, player_positions, lava_positions, death_locations, i, hex_grids, player_sprite, volcano_sprite, rip_sprite)
         generated_frames.append(frame_path)
         
-        print(f"Generated frame {i:03d}: {len(player_positions)} players, {len(lava_positions)} volcanoes")
+        print(f"Generated frame {i:03d}: {len(player_positions)} players, {len(lava_positions)} volcanoes, {len(death_locations)} graves")
     
     print(f"\nVisualization complete!")
     print(f"Generated {len(generated_frames)} frames in {output_dir}")
